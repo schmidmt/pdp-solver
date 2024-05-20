@@ -7,8 +7,6 @@ import argparse
 from pathlib import Path
 from dataclasses import dataclass
 from math import sqrt
-from bisect import bisect
-from copy import deepcopy
 
 import numpy as np
 from numpy.typing import NDArray
@@ -20,6 +18,8 @@ DEFAULT_COST_PER_DISANCE: float = 1.0
 
 @dataclass
 class Config:
+    """Configuration options"""
+
     max_distance: float
     deployment_cost: float
     cost_per_distance: float
@@ -27,6 +27,8 @@ class Config:
 
 @dataclass
 class Point:
+    """A 2D cartesian point"""
+
     x: float
     y: float
 
@@ -42,6 +44,8 @@ class Point:
 
 @dataclass
 class PickupDropff:
+    """Pickup and dropoff locations and ids for a customer order"""
+
     id: int
     pickup: Point
     dropoff: Point
@@ -57,6 +61,8 @@ class PickupDropff:
 
 
 class Route:
+    """A route container which caches the distance"""
+
     sequence: List[int]
     distance: float
     limit: float
@@ -84,9 +90,11 @@ class Route:
                 self.distance += distances[a, b]
 
     def to_id_list(self, pds: List[PickupDropff]) -> List[int]:
+        """Output a list of customer ids from the pickup and drop off list"""
         return [pds[i - 1].id for i in self.sequence]
 
     def join_if_feasible(self, other: Self, distances: NDArray) -> bool:
+        """Join two routes if it's possible"""
         new_distance = (
             self.distance
             + other.distance
@@ -102,9 +110,11 @@ class Route:
             return False
 
     def append_if_feasible(self, pd: int, distances: NDArray) -> bool:
+        """Append a point to this route if feasible"""
         return self.add_if_feasible(len(self.sequence), pd, distances)
 
     def add_if_feasible(self, index: int, pd: int, distances: NDArray) -> bool:
+        """Add an pickup and deliver at the given index if feasible"""
         # Choose the original start of the intermediate route at index
         if index <= 0:
             left = 0  # Use the depot if we're at the start
@@ -168,23 +178,6 @@ def elementry_routes(distances, config: Config) -> List[Route]:
     return routes
 
 
-def greedy_solver(distances: NDArray, config: Config) -> List[Route]:
-    """Create feasible solution with each vehicle taking the next closest stop."""
-    routes = [Route(limit=config.max_distance)]
-    available = [i for i in range(1, distances.shape[0])]
-
-    while available:
-        cur_route = routes[-1]
-        min_dist_index = np.argmin([distances[cur_route.last, i] for i in available])
-        next_stop = available[min_dist_index]
-        if cur_route.append_if_feasible(next_stop, distances):
-            del available[min_dist_index]
-        else:
-            routes.append(Route(limit=config.max_distance))
-
-    return routes
-
-
 def save_matrix(distances: NDArray, implementation_cost: float) -> NDArray:
     """Compute the save matrix"""
     return (
@@ -198,7 +191,8 @@ def save_matrix(distances: NDArray, implementation_cost: float) -> NDArray:
 def compute_distances(customers: List[PickupDropff]) -> NDArray:
     """Compute the distance matrix for the given customer pickup and drop offs.
 
-    The diagonal components store the distance between the pickup and drop off locations.
+    The diagonal components store the distance between the pickup and drop
+    off locations.
     """
 
     n = len(customers) + 1
@@ -215,18 +209,6 @@ def compute_distances(customers: List[PickupDropff]) -> NDArray:
                 distances[i, j] = a.dropoff.dist(b.pickup)
 
     return distances
-
-
-def calculate_total_cost(
-    routes: List[Route],
-    config: Config,
-) -> float:
-    """ """
-
-    return (
-        config.deployment_cost * len(routes)
-        + sum(r.distance for r in routes) * config.cost_per_distance
-    )
 
 
 def clarke_wright_solver(distances: NDArray, config: Config) -> List[Route]:
@@ -280,56 +262,6 @@ def clarke_wright_solver(distances: NDArray, config: Config) -> List[Route]:
     return [r for r in routes if r is not None]
 
 
-def linear_sweep_solver(
-    customers: List[PickupDropff], distances: NDArray, config: Config
-) -> List[Route]:
-    """Use the scan algorithm to find a feasible solution to the PDP"""
-    n = len(customers)
-    pickup_locations = np.zeros((n, 2))
-    dropoff_locations = np.zeros((n, 2))
-    for i, customer in enumerate(customers):
-        pickup_locations[i, 0] = customer.pickup.x
-        pickup_locations[i, 1] = customer.pickup.y
-        dropoff_locations[i, 0] = customer.dropoff.x
-        dropoff_locations[i, 1] = customer.dropoff.y
-
-    pickup_angles = np.arctan2(pickup_locations[:, 0], pickup_locations[:, 1])
-    dropoff_angles = np.arctan2(dropoff_locations[:, 0], dropoff_locations[:, 1])
-
-    pickup_to_customer_index = np.argsort(pickup_angles)
-    pickup_angles = pickup_angles[pickup_to_customer_index]
-
-    available = [True] * n
-    remaining = n
-
-    angle = 0
-    routes = [Route(limit=config.max_distance)]
-    while remaining > 0:
-        next_start = bisect(pickup_angles, angle)
-        next_customer_id = pickup_to_customer_index[next_start]
-
-        unchecked = remaining
-        route_is_at_capacity = True
-        while unchecked > 0:
-            while not available[next_customer_id]:
-                next_start = (next_start + 1) % n
-                next_customer_id = pickup_to_customer_index[next_start]
-
-            if routes[-1].append_if_feasible(next_customer_id + 1, distances):
-                available[next_customer_id] = False
-                remaining -= 1
-                angle = dropoff_angles[next_customer_id]
-                route_is_at_capacity = False
-                break
-            else:
-                unchecked -= 1
-
-        if route_is_at_capacity:
-            routes.append(Route(limit=config.max_distance))
-
-    return routes
-
-
 def main():
     """Parse arguments, load the customer data, and run a solver."""
 
@@ -380,13 +312,11 @@ def main():
     # Compute the distances for each pair of customers
     distances = compute_distances(customers)
 
+    # Use the CW solver
     routes = clarke_wright_solver(distances, config)
 
+    # Output in the expected format
     for route in routes:
-        print(route.to_id_list(customers))
-
-    print("-" * 80)
-    for route in linear_sweep_solver(customers, distances, config):
         print(route.to_id_list(customers))
 
 
